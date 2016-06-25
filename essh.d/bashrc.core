@@ -1,0 +1,99 @@
+##########################################################
+### There are some ugly exports, aliases and functions
+### necessary to get the evironment behave like expected.
+###
+### This file should not be modified. Use the include file
+### at the end of this file for your custom stuff.
+##########################################################
+
+# If not running interactively, don't do anything.
+case $- in
+   *i*) ;;
+   *) return ;;
+esac
+
+# Export REMOTE_RC_DIR (necessary if su was called).
+if [[ -z $REMOTE_RC_DIR ]]; then
+   REMOTE_RC_DIR=$( ps -ef \
+                        | grep -v grep \
+                        | grep -m1 -Eo 'export REMOTE_RC_DIR=[^ ]+' \
+                        | sed 's!^.*=!!; s!;!!' )
+   if [[ -n $REMOTE_RC_DIR ]]; then
+      export REMOTE_RC_DIR
+   else
+      echo "Could not get value of REMOTE_RC_DIR" >&2
+   fi
+fi
+
+# Ensure our rc files are removed in any case.
+. $REMOTE_RC_DIR/cleanup
+trap cleanup SIGTERM EXIT
+
+export_path() {
+   # Get PATH lines from given rc_file and export them.
+   local rc_file="$@"
+   local fallback_path=/bin:/usr/bin:/usr/local/bin:/sbin:/usr/sbin:/usr/local/sbin
+   local found_path=true
+   # If the rc file contains a matching pattern don't do anything with it.
+   # "pathmunge" is mostly used on RHEL, CentOS.
+   local skip_file_pattern='pathmunge'
+   for rc in $rc_file; do
+      [[ -f $rc ]] || continue
+      if ! grep -Eq -- "$skip_file_pattern" $rc; then
+         # PATH is sourced via command substitution.
+         $( awk -v mypath=$PATH -v myuid="$(id -u)" '
+            /PATH/{
+               # If you really have spaces in PATH modify this to your needs.
+               gsub(/"/,"");
+               if($0 !~ /export/) {sub(/^/,"export ")};
+               if($0 ~ /\$PATH/) {sub(/\$PATH/,mypath)};
+               if(myuid == 0 && FILENAME == "/etc/profile" && $0 !~ /PATH=.*sbin/) {$0=""}
+               {print}
+            }' $rc )
+      fi
+   done
+
+   if [[ $(id -u) -eq 0 ]]; then
+      [[ ! $PATH =~ /sbin ]] || [[ ! $PATH =~ /usr/sbin ]] && found_path=false
+   else
+      [[ ! $PATH =~ /bin ]] || [[ ! $PATH =~ /usr/bin ]] && found_path=false
+   fi
+   if [[ $found_path = false ]]; then
+      export PATH=$fallback_path
+      echo "Could not get proper PATH from $rc_file."
+      echo "Using fallback PATH=$PATH"
+   fi
+}
+
+### Some needed aliases.
+# sudo's "-H" ensures $HOME is set correctly.
+# The trailing space ensures that alias evaluation does not stop after the first alias occurence.
+alias sudo="sudo -H "
+alias su="su -p"
+[[ $(id -un) = root ]] && unalias su
+alias bash="/bin/bash --rcfile $REMOTE_RC_DIR/bashrc.core"
+#alias less='less -r'
+alias vi="vim -u $REMOTE_RC_DIR/vimrc"
+
+# This export is at least needed when using su.
+export HOME="$(getent passwd $(id -un) | awk -F':' '{print $6}')"
+cd $HOME
+
+# Get PATH.
+export_path /etc/profile
+[[ -r $HOME/.bashrc ]] && export_path $HOME/.bashrc
+[[ -f /etc/profile.d/vcs.sh ]]  && . /etc/profile.d/vcs.sh
+[[ -f /etc/profile.d/node.sh ]] && . /etc/profile.d/node.sh
+
+# Ensure the use of the global inputrc.
+export INPUTRC=/etc/inputrc
+
+export ESSH='essh_rocks'
+[[ $TERM = screen ]] && echo '::essh::+s' || echo '::essh::-s'
+
+# Some optional stuff.
+[[ -f $REMOTE_RC_DIR/bashrc.opt ]] && . $REMOTE_RC_DIR/bashrc.opt
+
+# Users should place their custom stuff in this file.
+[[ -f $REMOTE_RC_DIR/bashrc.user ]] && . $REMOTE_RC_DIR/bashrc.user
+

@@ -1,0 +1,7 @@
+#!/bin/bash
+
+. $REMOTE_RC_DIR/cleanup
+
+trap cleanup SIGINT SIGTERM EXIT
+
+/bin/bash --rcfile $REMOTE_RC_DIR/bashrc.core

@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Simply provide the cleanup function for other scripts or rc files.
+# (Yes, rc files sounds strange but it makes sense here.)
+cleanup() {
+   # This check avoids that the config files are deleted on logout
+   # if multiple essh invocations were made and still are active.
+
+   # First check if connections via screen exist.
+   NUM_PROCS=$( pgrep -f "/bin/bash.*${0##*/}" | wc -l )
+
+   # If NUM_PROCS is zero obviously our sessions run without 
+   # shell-wrapper and thus without screen.
+   if [[ $NUM_PROCS -eq 0 ]]; then
+      NUM_PROCS=$( pgrep -f "bash --rcfile $REMOTE_RC_DIR" | wc -l )
+      MAX_PROCS=3
+   else
+      MAX_PROCS=2
+   fi
+   # When only one last instance is running pgrep will see up to 2 processes.
+   # When running without screen pgrep will see up to 3 processes.
+   [[ $NUM_PROCS -le $MAX_PROCS ]] && rm -rf ${REMOTE_RC_DIR:=--}
+}

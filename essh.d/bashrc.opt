@@ -1,0 +1,41 @@
+#######################################
+### All this stuff is optional for essh
+### but it provides some nice goodies.
+#######################################
+
+# Export IPv4 and IPv6 of the interface specified for the default gw.
+export_inet_addr() {
+   local inet_if="$(LANG=C netstat -nr | awk '/^0\.0\.0\.0/{print $NF; exit}')"
+   local inet_all_ip="$(LANG=C netstat -ie | awk -v interface="$inet_if" '$1==interface,/^$/')"
+   export INET_IPv4="$(echo "$inet_all_ip" | awk '/inet / && !/127\.0\.0/{sub(/addr:/,"",$2); print $2}')"
+   export INET_IPv6="$(echo "$inet_all_ip" | awk '/inet6.*[Gg]lobal$/{sub(/\/.*$/,"",$3); print $3}')"
+}
+export_inet_addr
+
+# Show inet address as part of PS1.
+if [[ $HOSTNAME =~ ${INET_IPv4//./-} ]]; then
+   export PS1="\u@\h:\w\n\$> "
+else
+   export PS1="\u@\h:\w (${INET_IPv4:-$INET_IPv6})\n\$> "
+fi
+
+# Operating on a cluster?
+# (Maybe a check via package manager would be better here.)
+CLUSTER_BINARIES='clustat hastatus crm pcs pacemakerd drbdadm mongod'
+for bin in $CLUSTER_BINARIES; do
+   if cluster_bin=$( type -p $bin 2>&1 ); then
+      cluster_binaries="$cluster_binaries $cluster_bin"
+   fi
+done
+
+CLUSTER_FILES="/var/lib/mysql/grastate.dat /usr/share/elasticsearch/lib/elasticsearch*.jar"
+for my_file in $CLUSTER_FILES; do
+   [[ -e $my_file ]] && cluster_files="$cluster_files $my_file"
+done
+
+if [[ -n $cluster_binaries ]] || [[ -n $cluster_files ]]; then
+   # echo'ing the var trims leading and trailing spaces.
+   cluster_foo=$( echo ${cluster_binaries# *} ${cluster_files# *} )
+   echo "Cluster? Found: $cluster_foo"
+fi
+

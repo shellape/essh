@@ -1,0 +1,233 @@
+#!/bin/bash
+# name:          essh
+# description:   Pass your local environment to your ssh remote host.
+# author:        vd@ghostshell.de
+# version:       0.1
+# tested on:     Debian Wheezy, Debian Jessie
+# vim: ts=3 sw=3 sts=3 et ai ci
+
+set -e
+export PS4='+(${BASH_SOURCE}:${LINENO}): ${FUNCNAME[0]:+${FUNCNAME[0]}(): }'
+
+##########################################################################################
+# NOTICE: It is generally recommended to use the include config file ~/.essh_include.conf
+#         for your custom user variable values. This will avoid conflicts on essh updates.
+##########################################################################################
+
+#<USER_CONFIG>
+#--------------------------
+# Mandatory user variables
+#--------------------------
+# The files in this directory will be transfered to the remote system.
+ESSH_RC_DIR=~/.essh.d
+# This directory is the remote target for your rc files.
+REMOTE_RC_DIR=/var/tmp/.essh
+# The screenrc and bashrc file name must be identical with the files placed in ESSH_RC_DIR.
+SCREENRC_REMOTE=$REMOTE_RC_DIR/screenrc
+BASHRC_REMOTE=$REMOTE_RC_DIR/bashrc.core
+
+#-------------------------
+# Optional user variables
+#-------------------------
+HIST_FILE=
+MAX_HIST_LINES=
+TAR_EXCLUDES='--exclude={*.swp,*.git,*id_rsa*}'
+# Optional bash compatible regex for lines not to be written to history.
+HIST_EXCL_RE=''
+# Optional default user to use for ssh logins.
+DEFAULT_USER=
+# Optional sed compatible expression to strip off a part of the ssh command
+# before writing to history file. e.g. SSH_STRIP_EXPR='s/ .*foobar//'
+SSH_STRIP_EXPR=''
+# Set ControlPath option (see also man ssh_config).
+SSH_CONTROLMASTER_DIR=~/.ssh/controlmasters
+SSH_CONTROL_CONN_OPTS="-oControlMaster=auto -oControlPersist=1s"
+SCREEN_PARAM="-U"
+# If you don't want to use screen by default set true.
+NO_SCREEN=false
+#</USER_CONFIG>
+
+# Above variables can also be sourced via include config.
+# IMPORTANT: If you use the include config and define REMOTE_RC_DIR you MUST
+#            define SCREENRC_REMOTE and BASHRC_REMOTE in the include as well.
+# NOTICE: Changing INCLUDE_CONF can conflict with future essh updates.
+INCLUDE_CONF=~/.essh_include.conf
+[[ -f $INCLUDE_CONF ]] && . $INCLUDE_CONF
+
+#-----------------
+# Misc. variables
+#-----------------
+# The controlpath with the pattern remote-user@remote-host:ssh-port must stay
+# unchanged since later this pattern is used to check if there are existing sockets.
+# Ensure restrictive permissions for ssh's "ControlPath" directory!
+SSH_CONTROL_PATH="-oControlPath=$SSH_CONTROLMASTER_DIR/%r@%h:%p"
+TEST_EXEC=$REMOTE_RC_DIR/test_exec
+# Do some prechecks on the remote host first.
+PRECHECK_CMD="\
+mkdir -p $REMOTE_RC_DIR || exit 1
+if type screen > /dev/null; then
+   echo -n 'HAS_SCREEN '
+   echo true > $TEST_EXEC || exit 1
+   chmod 700 $TEST_EXEC
+   $TEST_EXEC > /dev/null && echo IS_EXEC || true
+fi"
+
+# This variable holds the necessary commands to be execute on the remote host.
+PUSH_CMD="export REMOTE_RC_DIR=$REMOTE_RC_DIR"
+# One of this commands will be appendeded to PUSH_CMD depending on the availabilty of screen.
+SCREEN_CMD="screen $SCREEN_PARAM -c $SCREENRC_REMOTE"
+BASH_CMD="bash --rcfile $BASHRC_REMOTE"
+
+PROG_NAME="${0##*/}"
+USAGE="\
+$PROG_NAME - Pass your local environment to your ssh remote host.
+
+Usage: $PROG_NAME [-h|--help|help] [-ns|--no-screen] <put your usual ssh parameters here>\n\n"
+ARGV="$@"
+export LANG=C
+
+
+#------
+# main
+#------
+if [[ $# -eq 0 ]] || [[ $1 =~ -h|--help|help ]]; then
+   printf "$USAGE"
+   exit 1
+fi
+# Search for ssh host part and remote comamnd.
+# TODO: Fix evaluating of ARGV for some edge cases where it works not properly.
+while true; do
+   case "$1" in
+      -ns|--no-screen)
+         ARGV="$( echo "$ARGV" | sed "s/-ns//; s/--no-screen//" )"
+         NO_SCREEN=true
+         shift 1
+      ;;
+      # These are ssh parameters which do not take an argument.
+      -[AaCfgKkMNnqsTtVvXxYy] )
+         [[ -n $REMOTE_CMD ]] && REMOTE_CMD="$REMOTE_CMD $1"
+         shift 1 || break
+      ;;
+      -?)
+         if [[ -n $REMOTE_CMD ]]; then
+            REMOTE_CMD="$REMOTE_CMD $1"
+            shift 1 || break
+         else
+            shift 2 || break
+         fi
+      ;; 
+      -?*)
+         [[ -n $REMOTE_CMD ]] && REMOTE_CMD="$REMOTE_CMD $1"
+         shift 1 || break
+      ;; 
+      *)
+         if [[ -z $REMOTE_HOST ]]; then
+            # The argument without a leading parameter is the host argument.
+            REMOTE_HOST=$1
+         else
+            # The next argument without a leading parameter is the first one of the ssh remote command.
+            REMOTE_CMD="$REMOTE_CMD $1"
+         fi
+         shift 1 || break
+      ;;
+   esac
+done
+
+# Create ssh controlmaster dir and check for ESSH_RC_DIR existence.
+install -d -m700 $SSH_CONTROLMASTER_DIR
+find $ESSH_RC_DIR > /dev/null
+
+###########################################################################
+# Further analyse of ARGV. (The order of the following steps is essential!)
+# TODO: Simplify this too complex block in someway.
+###########################################################################
+# STEP 1 - Substitute s/-/\./g if the IP gets passed in this way: 192-168-80-30
+if [[ ! $REMOTE_HOST =~ \.[a-zA-Z]+$ ]] && [[ $REMOTE_HOST =~ - ]]; then
+   NEW_REMOTE_HOST="${REMOTE_HOST//-/.}"
+   ARGV="$( echo $ARGV | sed "s!$REMOTE_HOST!$NEW_REMOTE_HOST!g" )"
+   SSH_ARGS="$( echo $SSH_ARGS | sed "s!$REMOTE_HOST!$NEW_REMOTE_HOST!g" )"
+   REMOTE_HOST="$NEW_REMOTE_HOST"
+fi
+# This trims leading and trailing spaces.
+REMOTE_CMD="$( echo $REMOTE_CMD )"
+# STEP 2 - Extract ssh args.
+SSH_ARGS="$( echo "$ARGV" | sed "s! *${REMOTE_CMD}!!; s!-t!!" )"
+# STEP 3 - Check in which way the ssh user was passed and modify it optionally.
+if [[ $SSH_ARGS =~ @ ]]; then
+   REMOTE_HOST=${REMOTE_HOST#*@}
+elif [[ ! $SSH_ARGS =~ -l ]] && [[ -n $DEFAULT_USER ]]; then
+   ARGV="-l $DEFAULT_USER $ARGV"
+   SSH_ARGS="-l $DEFAULT_USER $SSH_ARGS"
+fi
+trap 'printf "\nhost: $REMOTE_HOST\n"' SIGINT
+# STEP 4 - Check ssh multiplexing stuff.
+if [[ $SSH_ARGS =~ ControlPath= ]]; then
+   unset SSH_CONTROL_PATH
+else
+   if [[ -n $REMOTE_HOST ]]; then
+      SSH_PORT=$( echo $SSH_ARGS | grep -Eo -- '-(p *|o *Port(=| *))[0-9]+' | grep -Eo '[0-9]+' ) || true
+      # Check if there is already a socket for the requested host.
+      CONTROL_SOCKET=$( find $SSH_CONTROLMASTER_DIR -name "*@$REMOTE_HOST:${SSH_PORT:-22}*" )
+      if [[ -n $CONTROL_SOCKET ]]; then
+         unset SSH_CONTROL_CONN_OPTS
+         echo "Reusing socket $CONTROL_SOCKET."
+      else
+         # Establish controlmaster connection.
+         # This has the advantage that if a password has to be passed it is not asked more than once.
+         ssh -fnN $SSH_CONTROL_PATH $SSH_CONTROL_CONN_OPTS $SSH_ARGS
+      fi
+   fi
+fi
+# STEP 5 - Check if remote command is set and has to be executed interactively.
+if [[ -n $REMOTE_CMD ]]; then
+   if [[ $REMOTE_CMD =~ $PUSH_CMD ]]; then
+      SKIP_PUSH=true
+   else
+      # Simply call ssh for interactive command execution.
+      ssh $SSH_CONTROL_PATH $ARGV
+      exit $?
+   fi
+fi
+###########################################################################
+
+
+$NO_SCREEN && PRECHECK_CMD="mkdir -p $REMOTE_RC_DIR || exit 1"
+# Create remote dir, check if screen is available, if target dir writable and exec mounted.
+PRE_CHECK="$( ssh $SSH_CONTROL_PATH $SSH_ARGS "$PRECHECK_CMD" )"
+if [[ $PRE_CHECK = *HAS_SCREEN* ]]; then
+   if [[ $PRE_CHECK = *IS_EXEC* ]]; then
+      # The shell-wrapper needs executable mount option on REMOTE_RC_DIR.
+      PUSH_CMD="$PUSH_CMD; $SCREEN_CMD"
+   else
+      PUSH_CMD="$PUSH_CMD; $BASH_CMD"
+   fi
+else
+   PUSH_CMD="$PUSH_CMD; $BASH_CMD"
+fi
+
+# Write history.
+if [[ -n $HIST_FILE ]] && [[ $MAX_HIST_LINES -gt 0 ]]; then 
+   if [[ ! $ARGV =~ ${HIST_EXCL_RE:-^$} ]]; then
+      STRIPPED_ARGV=$( echo "ssh $ARGV" | sed "${SSH_STRIP_EXPR:-s/^$//}" )
+      if ! grep -q "$STRIPPED_ARGV" $HIST_FILE; then
+         printf '%s\n%s\n' "$STRIPPED_ARGV" "$( < $HIST_FILE )" > $HIST_FILE
+      fi
+   fi
+fi
+
+# Pipe the tarball. (scp or rsync could also be used here but scp lacks of excludes
+# and rsync would have to be available on the remote. TAR is more likely installed.)
+tar -C $ESSH_RC_DIR $TAR_EXCLUDES -czf - . \
+   | ssh $SSH_CONTROL_PATH $SSH_ARGS "cd $REMOTE_RC_DIR && { tar -xzf - || { rm -r $REMOTE_RC_DIR; exit 1; } }"
+# Because of the pipe the return code at least of the first command has to be checked explicitly.
+RC=$( echo ${PIPESTATUS[@]} | tr ' ' '\n' | sort -u )
+[[ $RC != 0 ]] && exit $RC
+
+# Do the login.
+if [[ -n $SKIP_PUSH ]]; then
+   ssh $SSH_CONTROL_PATH $ARGV
+else
+   # Execute your remote command for login.
+   ssh $SSH_CONTROL_PATH $ARGV -t "$PUSH_CMD"
+fi
+

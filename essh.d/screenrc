@@ -1,0 +1,8 @@
+shell "$REMOTE_RC_DIR/shell-wrapper"
+startup_message off
+defscrollback 100000
+termcapinfo xterm|xterms|xs|rxvt ti@:te@
+# To keep scrolling enabled caption
+# and hardstatus must not be enabled.
+caption splitonly
+hardstatus ignore
