@@ -1,7 +1,6 @@
 #!/bin/bash
 # name:          install.sh
 # description:   Copy rc files to be used with essh to $ESSH_RC_DIR.
-# author:        vd@ghostshell.de
 # version:       0.1
 # tested on:     Debian Wheezy, Debian Jessie
 # vim: ts=3 sw=3 sts=3 et ai ci
